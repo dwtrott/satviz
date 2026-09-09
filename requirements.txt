@@ -1,0 +1,9 @@
+numpy
+requests
+sgp4
+matplotlib
+pyvista>=0.44
+pyvistaqt
+PyQt5
+plotly
+anywidget
