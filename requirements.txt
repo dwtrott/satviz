@@ -1,9 +1,11 @@
 numpy
 requests
 sgp4
+# desktop window (satviz_gui.py)
 matplotlib
 pyvista>=0.44
 pyvistaqt
 PyQt5
+# inline plotly viewer (optional)
 plotly
 anywidget

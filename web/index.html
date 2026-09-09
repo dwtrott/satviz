@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>satviz — live satellites</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>window.SATVIZ_CONFIG = /*CONFIG*/{}/*ENDCONFIG*/;</script>
+<script>
+  // Cesium + satellite.js: CDN by default, local copies when the server provides them.
+  (function () {
+    var c = window.SATVIZ_CONFIG;
+    window.CESIUM_BASE_URL = c.cesium_base;
+    document.write('<link rel="stylesheet" href="' + c.cesium_base + 'Widgets/widgets.css">');
+    document.write('<scr' + 'ipt src="' + c.cesium_base + 'Cesium.js"></scr' + 'ipt>');
+    document.write('<scr' + 'ipt src="' + c.satellite_js + '"></scr' + 'ipt>');
+  })();
+</script>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #e6edf3; overflow: hidden; }
+  #cesiumContainer { position: absolute; inset: 0; }
+  #panel { position: absolute; top: 10px; right: 10px; width: 290px; max-height: calc(100% - 60px); overflow-y: auto;
+           background: rgba(10, 14, 22, 0.86); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,0.12);
+           border-radius: 10px; padding: 12px 14px; font-size: 13px; box-shadow: 0 6px 24px rgba(0,0,0,0.5); z-index: 5; }
+  #panel h1 { font-size: 15px; margin: 0 0 8px; letter-spacing: 0.3px; }
+  #panel h2 { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: #8fa3b8; margin: 14px 0 6px; }
+  #panel label { display: flex; align-items: center; gap: 6px; margin: 3px 0; cursor: pointer; }
+  #panel input[type=range] { width: 100%; }
+  #panel input[type=text] { width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px; border: 1px solid #334; background: #0d1117; color: #e6edf3; }
+  #panel button { background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; cursor: pointer; font-size: 12px; margin-right: 4px; }
+  #panel button.secondary { background: #30363d; }
+  #results { max-height: 140px; overflow-y: auto; margin-top: 6px; }
+  #results div { padding: 3px 6px; border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #results div:hover { background: rgba(255,255,255,0.08); }
+  #info { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; line-height: 1.5; white-space: pre; color: #cdd9e5; }
+  #status { color: #8fa3b8; font-size: 11px; margin-top: 10px; line-height: 1.5; }
+  .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .cesium-viewer-bottom { display: none; }
+  #toggle { position: absolute; top: 10px; right: 10px; z-index: 6; display: none; background: #1f6feb; color: #fff; border: 0; border-radius: 6px; padding: 6px 10px; }
+</style>
+</head>
+<body>
+<div id="cesiumContainer"></div>
+<button id="toggle">☰ controls</button>
+<div id="panel">
+  <h1>satviz <span style="font-weight:normal;color:#8fa3b8">live satellites</span></h1>
+  <div id="info">click a satellite…</div>
+  <div style="margin-top:6px"><label><input type="checkbox" id="follow"> follow selected</label>
+    <button class="secondary" id="orbitBtn">show full orbit</button></div>
+
+  <h2>Find</h2>
+  <input type="text" id="search" placeholder="name or NORAD id (ISS, 25544, NAVSTAR)…">
+  <div id="results"></div>
+
+  <h2>Groups</h2>
+  <div id="groups"></div>
+
+  <h2>Trails</h2>
+  <label>length <span id="trailVal"></span> min</label>
+  <input type="range" id="trail" min="0" max="240" step="5">
+  <label>draw trails for up to <span id="maxTrailsVal"></span> objects</label>
+  <input type="range" id="maxTrails" min="0" max="3000" step="50">
+
+  <h2>View</h2>
+  <label><input type="checkbox" id="inertial"> inertial (ECI) camera</label>
+  <label><input type="checkbox" id="lighting" checked> sun lighting</label>
+  <div style="margin-top:6px"><button class="secondary" id="homeBtn">reset view</button>
+    <button class="secondary" id="nowBtn">now ×1</button>
+    <button class="secondary" id="refreshBtn">refresh TLEs</button></div>
+  <div id="status">loading…</div>
+</div>
+
+<script>
+(async function () {
+  const CFG = window.SATVIZ_CONFIG;
+  const $ = id => document.getElementById(id);
+
+  // ---------- viewer ----------
+  if (CFG.ion_token) Cesium.Ion.defaultAccessToken = CFG.ion_token;
+  let imagery;
+  if (CFG.ion_token) {
+    imagery = undefined; // Cesium picks its default world imagery via ion
+  } else {
+    imagery = new Cesium.UrlTemplateImageryProvider({
+      url: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/BlueMarble_ShadedRelief_Bathymetry/default/2004-08/GoogleMapsCompatible_Level8/{z}/{y}/{x}.jpeg",
+      tilingScheme: new Cesium.WebMercatorTilingScheme(), maximumLevel: 8, credit: "NASA GIBS Blue Marble",
+    });
+  }
+  const viewer = new Cesium.Viewer("cesiumContainer", {
+    baseLayer: imagery ? new Cesium.ImageryLayer(imagery) : undefined,
+    baseLayerPicker: !!CFG.ion_token, geocoder: false, homeButton: false, sceneModePicker: true,
+    navigationHelpButton: false, infoBox: false, selectionIndicator: false,
+    timeline: true, animation: true, shouldAnimate: true, fullscreenButton: true,
+    terrain: undefined, requestRenderMode: false,
+  });
+  const scene = viewer.scene, globe = scene.globe, clock = viewer.clock;
+  globe.enableLighting = true;
+  globe.showGroundAtmosphere = true;
+  scene.skyAtmosphere.show = true;
+  scene.highDynamicRange = false;
+  globe.baseColor = Cesium.Color.fromCssColorString("#0b2d5c");
+  const now = Cesium.JulianDate.now();
+  clock.startTime = Cesium.JulianDate.addHours(now, -12, new Cesium.JulianDate());
+  clock.stopTime = Cesium.JulianDate.addHours(now, 12, new Cesium.JulianDate());
+  clock.currentTime = now; clock.clockRange = Cesium.ClockRange.UNBOUNDED; clock.multiplier = 1;
+  viewer.timeline.zoomTo(clock.startTime, clock.stopTime);
+
+  // ---------- data ----------
+  const points = scene.primitives.add(new Cesium.PointPrimitiveCollection());
+  const trails = scene.primitives.add(new Cesium.PolylineCollection());
+  const labels = scene.primitives.add(new Cesium.LabelCollection());
+  const orbitLines = scene.primitives.add(new Cesium.PolylineCollection());
+  let sats = [];            // {i, name, norad, group, rec, point, trail}
+  let groupsMeta = {};      // group -> {color, count, visible}
+  let selected = null, follow = false, showOrbit = false;
+  let trailMin = CFG.trail_minutes, maxTrails = CFG.max_trails;
+  const scratchCart = new Cesium.Cartesian3();
+
+  function colorFor(g, i) {
+    const map = CFG.colors; const fb = ["#e6194b","#3cb44b","#4363d8","#f58231","#911eb4","#46f0f0","#f032e6","#bcf60c","#fabebe","#008080"];
+    return Cesium.Color.fromCssColorString(map[g] || fb[i % fb.length]);
+  }
+
+  function ecefAt(rec, date) {
+    const pv = satellite.propagate(rec, date);
+    if (!pv.position || typeof pv.position === "boolean") return null;
+    const gmst = satellite.gstime(date);
+    const e = satellite.eciToEcf(pv.position, gmst);
+    return Cesium.Cartesian3.fromElements(e.x * 1000, e.y * 1000, e.z * 1000, new Cesium.Cartesian3());
+  }
+
+  async function loadTLEs() {
+    const r = await fetch(CFG.tle_url + "?t=" + Date.now()); const data = await r.json();
+    points.removeAll(); trails.removeAll(); sats = []; groupsMeta = {};
+    let gi = 0;
+    for (const [g, list] of Object.entries(data.groups)) {
+      const color = colorFor(g, gi++); groupsMeta[g] = { color, count: 0, visible: groupsMeta[g]?.visible ?? true };
+      for (const [name, l1, l2] of list) {
+        let rec; try { rec = satellite.twoline2satrec(l1, l2); } catch (e) { continue; }
+        const s = { i: sats.length, name, norad: rec.satnum, group: g, rec, trail: null };
+        s.point = points.add({ position: Cesium.Cartesian3.ZERO, pixelSize: CFG.point_size, color, id: s.i,
+                               disableDepthTestDistance: 0, show: groupsMeta[g].visible });
+        sats.push(s); groupsMeta[g].count++;
+      }
+    }
+    buildGroupUI(); rebuildTrails();
+    $("status").innerHTML = `${sats.length} objects · TLEs fetched ${data.fetched.slice(0,16).replace("T"," ")} UTC`;
+  }
+
+  function buildGroupUI() {
+    const box = $("groups"); box.innerHTML = "";
+    for (const [g, m] of Object.entries(groupsMeta)) {
+      const lab = document.createElement("label");
+      lab.innerHTML = `<input type="checkbox" ${m.visible ? "checked" : ""}> <span class="swatch" style="background:${m.color.toCssColorString()}"></span> ${g} <span style="color:#8fa3b8">(${m.count})</span>`;
+      lab.querySelector("input").onchange = e => { m.visible = e.target.checked; for (const s of sats) if (s.group === g) { s.point.show = m.visible; if (s.trail) s.trail.show = m.visible; } };
+      box.appendChild(lab);
+    }
+  }
+
+  function rebuildTrails() {
+    trails.removeAll();
+    let n = 0;
+    for (const s of sats) { s.trail = null; }
+    // spread the trail budget evenly across groups
+    const perGroup = Math.ceil(maxTrails / Math.max(1, Object.keys(groupsMeta).length));
+    const used = {};
+    for (const s of sats) {
+      used[s.group] = used[s.group] || 0;
+      if (used[s.group] >= perGroup || n >= maxTrails) continue;
+      used[s.group]++; n++;
+      s.trail = trails.add({ positions: [Cesium.Cartesian3.ZERO, Cesium.Cartesian3.ZERO], width: 1.2, show: groupsMeta[s.group].visible,
+        material: Cesium.Material.fromType("Color", { color: groupsMeta[s.group].color.withAlpha(0.45) }) });
+    }
+    lastTrailUpdate = 0;
+  }
+
+  // ---------- per-frame update ----------
+  let lastPos = 0, lastTrailUpdate = 0;
+  const K = 40;
+  scene.preUpdate.addEventListener(() => {
+    const t = clock.currentTime, date = Cesium.JulianDate.toDate(t), nowMs = performance.now();
+    const posInterval = Math.min(1000, Math.max(100, sats.length / 15));
+    if (nowMs - lastPos > posInterval) {
+      lastPos = nowMs;
+      for (const s of sats) {
+        if (!s.point.show) continue;
+        const p = ecefAt(s.rec, date);
+        if (p) s.point.position = p;
+      }
+      if (selected) updateInfo(date);
+    }
+    if (nowMs - lastTrailUpdate > 1500 && trailMin > 0) {
+      lastTrailUpdate = nowMs;
+      const gmstNow = satellite.gstime(date);
+      for (const s of sats) {
+        if (!s.trail || !s.trail.show) continue;
+        const pts = [];
+        for (let j = 0; j < K; j++) {
+          const d = new Date(date.getTime() - trailMin * 60000 * (1 - j / (K - 1)));
+          const pv = satellite.propagate(s.rec, d); if (!pv.position || typeof pv.position === "boolean") continue;
+          // trails drawn in the Earth-fixed frame at the *current* GMST so they show the inertial orbit shape
+          const e = satellite.eciToEcf(pv.position, inertialTrails ? gmstNow : satellite.gstime(d));
+          pts.push(new Cesium.Cartesian3(e.x * 1000, e.y * 1000, e.z * 1000));
+        }
+        if (pts.length > 1) s.trail.positions = pts;
+      }
+      if (showOrbit && selected) drawOrbit(date);
+    }
+    if (follow && selected) {
+      const p = selected.point.position;
+      if (!Cesium.Cartesian3.equals(p, Cesium.Cartesian3.ZERO)) {
+        const tf = Cesium.Transforms.eastNorthUpToFixedFrame(p);
+        scene.camera.lookAtTransform(tf, new Cesium.Cartesian3(-2.5e6, -1.5e6, 1.8e6));
+      }
+    }
+  });
+  let inertialTrails = true;
+
+  // inertial camera: rotate the camera with the stars instead of the ground
+  let inertial = false;
+  scene.postUpdate.addEventListener((sc, time) => {
+    if (!inertial || scene.mode !== Cesium.SceneMode.SCENE3D || follow) return;
+    const icrf = Cesium.Transforms.computeIcrfToFixedMatrix(time);
+    if (Cesium.defined(icrf)) {
+      const cam = scene.camera, offset = Cesium.Cartesian3.clone(cam.position);
+      const tf = Cesium.Matrix4.fromRotationTranslation(icrf);
+      cam.lookAtTransform(tf); Cesium.Matrix4.multiplyByPoint(tf, offset, cam.position);
+    }
+  });
+
+  // ---------- selection ----------
+  const label = labels.add({ show: false, font: "13px system-ui", fillColor: Cesium.Color.WHITE, outlineColor: Cesium.Color.BLACK, outlineWidth: 3,
+                             style: Cesium.LabelStyle.FILL_AND_OUTLINE, pixelOffset: new Cesium.Cartesian2(12, -12), disableDepthTestDistance: Number.POSITIVE_INFINITY });
+  function select(s) {
+    if (selected) { selected.point.pixelSize = CFG.point_size; selected.point.outlineWidth = 0; }
+    selected = s; orbitLines.removeAll();
+    if (!s) { label.show = false; $("info").textContent = "click a satellite…"; return; }
+    s.point.pixelSize = CFG.point_size * 2; s.point.outlineColor = Cesium.Color.WHITE; s.point.outlineWidth = 2;
+    label.show = true; label.text = s.name; updateInfo(Cesium.JulianDate.toDate(clock.currentTime));
+    if (showOrbit) drawOrbit(Cesium.JulianDate.toDate(clock.currentTime));
+  }
+  function updateInfo(date) {
+    const s = selected, pv = satellite.propagate(s.rec, date); if (!pv.position || typeof pv.position === "boolean") return;
+    const gmst = satellite.gstime(date), geo = satellite.eciToGeodetic(pv.position, gmst);
+    const v = pv.velocity, speed = Math.hypot(v.x, v.y, v.z);
+    label.position = s.point.position;
+    const period = 2 * Math.PI / s.rec.no; // minutes
+    $("info").textContent = `${s.name}\nNORAD ${s.norad}   ${s.group}\nalt  ${geo.height.toFixed(0).padStart(7)} km   v ${speed.toFixed(2)} km/s\nlat  ${satellite.degreesLat(geo.latitude).toFixed(2).padStart(7)}°  lon ${satellite.degreesLong(geo.longitude).toFixed(2).padStart(8)}°\nincl ${(s.rec.inclo * 180 / Math.PI).toFixed(1)}°   period ${period.toFixed(1)} min`;
+  }
+  function drawOrbit(date) {
+    orbitLines.removeAll(); if (!selected) return;
+    const period = 2 * Math.PI / selected.rec.no * 60000, gmst = satellite.gstime(date), pts = [];
+    for (let j = 0; j <= 180; j++) {
+      const d = new Date(date.getTime() - period / 2 + period * j / 180);
+      const pv = satellite.propagate(selected.rec, d); if (!pv.position || typeof pv.position === "boolean") continue;
+      const e = satellite.eciToEcf(pv.position, inertialTrails ? gmst : satellite.gstime(d));
+      pts.push(new Cesium.Cartesian3(e.x * 1000, e.y * 1000, e.z * 1000));
+    }
+    orbitLines.add({ positions: pts, width: 1.5, material: Cesium.Material.fromType("Color", { color: Cesium.Color.WHITE.withAlpha(0.7) }) });
+  }
+  const handler = new Cesium.ScreenSpaceEventHandler(scene.canvas);
+  handler.setInputAction(click => {
+    const picked = scene.pick(click.position);
+    if (Cesium.defined(picked) && picked.primitive instanceof Cesium.PointPrimitive) select(sats[picked.id]);
+    else select(null);
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+  function flyTo(s) {
+    select(s);
+    const p = ecefAt(s.rec, Cesium.JulianDate.toDate(clock.currentTime)); if (!p) return;
+    scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    scene.camera.flyToBoundingSphere(new Cesium.BoundingSphere(p, 1.0e6), { duration: 1.5,
+      offset: new Cesium.HeadingPitchRange(0, -0.5, 4.5e6) });
+  }
+
+  // ---------- UI wiring ----------
+  $("trail").value = trailMin; $("trailVal").textContent = trailMin;
+  $("trail").oninput = e => { trailMin = +e.target.value; $("trailVal").textContent = trailMin; if (trailMin === 0) for (const s of sats) if (s.trail) s.trail.positions = [Cesium.Cartesian3.ZERO, Cesium.Cartesian3.ZERO]; lastTrailUpdate = 0; };
+  $("maxTrails").value = maxTrails; $("maxTrailsVal").textContent = maxTrails;
+  $("maxTrails").onchange = e => { maxTrails = +e.target.value; $("maxTrailsVal").textContent = maxTrails; rebuildTrails(); };
+  $("follow").onchange = e => { follow = e.target.checked; if (!follow) scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); };
+  $("orbitBtn").onclick = () => { showOrbit = !showOrbit; $("orbitBtn").textContent = showOrbit ? "hide full orbit" : "show full orbit"; if (showOrbit) drawOrbit(Cesium.JulianDate.toDate(clock.currentTime)); else orbitLines.removeAll(); };
+  $("inertial").onchange = e => { inertial = e.target.checked; if (!inertial) scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY); };
+  $("lighting").onchange = e => { globe.enableLighting = e.target.checked; };
+  $("homeBtn").onclick = () => { follow = false; $("follow").checked = false; scene.camera.lookAtTransform(Cesium.Matrix4.IDENTITY);
+    scene.camera.flyTo({ destination: Cesium.Cartesian3.fromDegrees(-75, 30, 2.6e7), duration: 1.2 }); };
+  $("nowBtn").onclick = () => { clock.currentTime = Cesium.JulianDate.now(); clock.multiplier = 1; clock.shouldAnimate = true; lastTrailUpdate = 0; };
+  $("refreshBtn").onclick = async () => { $("status").textContent = "refreshing…"; await fetch(CFG.tle_url + "?refresh=1"); await loadTLEs(); };
+  $("search").oninput = () => {
+    const q = $("search").value.trim().toLowerCase(), box = $("results"); box.innerHTML = "";
+    if (!q) return;
+    const hits = sats.filter(s => s.name.toLowerCase().includes(q) || String(s.norad) === q).slice(0, 100);
+    for (const s of hits) { const d = document.createElement("div"); d.textContent = `${s.name}  [${s.norad}]`; d.onclick = () => flyTo(s); box.appendChild(d); }
+    if (hits.length === 1) flyTo(hits[0]);
+  };
+  $("search").onkeydown = e => { if (e.key === "Enter") { const q = $("search").value.trim().toLowerCase(); const s = sats.find(s => s.name.toLowerCase().includes(q) || String(s.norad) === q); if (s) flyTo(s); } };
+  $("toggle").onclick = () => { $("panel").style.display = $("panel").style.display === "none" ? "block" : "none"; };
+  if (window.innerWidth < 700) { $("toggle").style.display = "block"; $("panel").style.display = "none"; }
+
+  scene.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(-75, 30, 2.6e7) });
+  await loadTLEs();
+  setInterval(loadTLEs, CFG.refetch_hours * 3600 * 1000);
+  window.satviz = { viewer, sats, select, flyTo };
+})();
+</script>
+</body>
+</html>

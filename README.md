@@ -1,34 +1,51 @@
 # satviz
 
-Live 3D satellite viewer: CelesTrak TLEs → SGP4 → textured Earth in a standalone
-PyVista/VTK window with a Qt control panel. Launch it from a notebook or a terminal.
+Live 3D satellite viewer: CelesTrak TLEs → SGP4 → a globe you can orbit, zoom and scrub through time.
+
+![preview](preview.png)
 
 ```
-pip install sgp4 numpy requests matplotlib pyvista pyvistaqt PyQt5
+git clone https://github.com/dwtrott/satviz.git && cd satviz
+pip install -r requirements.txt
 ```
 
-## Standalone window (satviz_gui.py)
+## Web viewer — `satviz_web.py` (recommended)
+
+Serves a CesiumJS page and hands you a link. Works from a terminal, a local Jupyter kernel, or
+Google Colab (see `satviz_colab.ipynb`). Only `requests` is needed on the Python side.
+
+```python
+from satviz_web import launch
+srv = launch(groups=["stations", "gps-ops", "starlink"])   # → http://localhost:8765/  (Colab: proxied link)
+srv.stop()
+```
+`python satviz_web.py --groups stations gps-ops starlink --port 8765` does the same from a shell;
+add `--host 0.0.0.0` to share on your LAN.
+
+- NASA Blue Marble imagery (no API key), day/night terminator, atmosphere, stars
+- Left-drag orbit · scroll zoom · right-drag tilt · click a satellite for name / NORAD / alt / lat-lon / speed / period
+- Clock widget for playback speed (×1 … ×thousands), timeline for scrubbing ±12 h, "now ×1" to return
+- Trails per satellite (length + count sliders), full-orbit line for the selected object, follow mode
+- Inertial (ECI) camera toggle so orbits stay put while the Earth turns
+- Per-group visibility, find by name or NORAD id, TLEs refetched every 2 h
+- Propagation runs in the browser (satellite.js), so 10k+ objects are fine
+- Optional: `launch(..., ion_token="…")` or `CESIUM_ION_TOKEN=…` for Cesium ion / Bing imagery
+
+## Desktop window — `satviz_gui.py`
+
+PyVista/VTK window with a Qt control panel, textured Earth and sun lighting. Local machine only.
 
 ```python
 from satviz_gui import launch
-app = launch(groups=["stations", "gps-ops", "starlink"])   # window opens; kernel stays free
+app = launch(groups=["stations", "gps-ops", "starlink"])
 ```
-or `python satviz_gui.py --groups stations gps-ops starlink oneweb`.
+or `python satviz_gui.py --groups stations gps-ops`. Needs `pyvista pyvistaqt PyQt5 matplotlib`.
 
-- Mouse: left-drag orbit, scroll zoom, middle/shift-drag pan, click a satellite to label it
-- Panel: pause/play, speed ×1–×3600, time scrub ±24 h, trail length, per-group toggles,
-  ECI / Earth-fixed frame, find by name or NORAD id → focus, refresh TLEs
-- Earth rotates at sidereal rate, lit by the Sun at the current time (day/night terminator)
-- First run downloads NASA Blue Marble (5400×2700) to `~/.satviz/`; falls back to PyVista's
-  bundled 2k globe if offline. Use `launch(..., texture_path="my_earth.jpg")` for your own
-  equirectangular image (e.g. an 8k/16k Blue Marble or a night-lights composite).
-- Positions re-propagate every second; TLEs re-fetched every 2 h (CelesTrak's guidance).
+## Data layer — `satviz.py`
 
-Programmatic: `app.scene.focus(i)`, `app.scene.speed`, `app.scene.set_frame(True)`,
-`app.scene.set_trail_minutes(90)`, `app.catalog.propagate(times)` → ECI km array `(n, t, 3)`.
+`Catalog` fetches CelesTrak groups and propagates with vectorised SGP4:
+`Catalog().fetch(["gps-ops"]).propagate(times)` → ECI km, shape `(n_sats, n_times, 3)`.
+Also contains an inline Plotly `SatelliteViewer` if you ever want it in a notebook cell.
 
-## Inline Plotly version (satviz.py)
-`SatelliteViewer(...).show()` renders inside the notebook instead; same data layer.
-
-CelesTrak GROUP names: stations, gps-ops, galileo, glo-ops, beidou, starlink, oneweb,
-iridium-NEXT, weather, noaa, geo, active (everything), cosmos-2251-debris, …
+CelesTrak GROUP names: stations, gps-ops, galileo, glo-ops, beidou, starlink, oneweb, iridium-NEXT,
+weather, noaa, geo, active (everything), cosmos-2251-debris, …
